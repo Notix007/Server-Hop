@@ -1,0 +1,158 @@
+-- Verhindert Abstürze, falls das Spiel noch lädt
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- !!! DEIN LINK FÜR DEN ERSTEN START !!!
+local meinGithubLink = "HIER_DEINEN_GITHUB_RAW_LINK_EINFÜGEN"
+
+-- UI Erstellen (Nur der verschiebbare Button)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MinimalHopperGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local StartButton = Instance.new("TextButton")
+StartButton.Size = UDim2.new(0, 180, 0, 50)
+StartButton.Position = UDim2.new(0.5, -90, 0.5, -25)
+StartButton.Text = "Hop in 5s..."
+StartButton.TextSize = 20
+StartButton.Font = Enum.Font.SourceSansBold
+StartButton.BackgroundColor3 = Color3.fromRGB(200, 0, 0) -- Direkt rot für Autostart
+StartButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+StartButton.Active = true
+StartButton.Parent = ScreenGui
+
+local ButtonCorner = Instance.new("UICorner")
+ButtonCorner.CornerRadius = UDim.new(0, 8)
+ButtonCorner.Parent = StartButton
+
+-- DRAG-SYSTEM (Macht den Button verschiebbar)
+local dragging, dragInput, dragStart, startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    StartButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+StartButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = StartButton.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+StartButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+-- SERVER-SUCHE
+local function serverHop()
+    local PlaceId = game.PlaceId
+    local JobId = game.JobId
+    local url = string.format("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Asc&limit=100", tostring(PlaceId))
+    
+    StartButton.Text = "Suche Server..."
+    
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(url))
+    end)
+    
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            -- Filtert volle Server streng (mindestens 2 Plätze frei)
+            if server.playing and server.maxPlayers and server.playing < (server.maxPlayers - 2) and server.id ~= JobId then
+                StartButton.Text = "Teleportiere..."
+                
+                -- TELEPORT SCRIPTE INJIZIEREN
+                local qot = queue_on_teleport or (syn and syn.queue_on_teleport)
+                if qot then
+                    pcall(function()
+                        qot([[
+                            repeat task.wait() until game:IsLoaded()
+                            task.wait(2)
+                            if game:GetService("Players").LocalPlayer then
+                                loadstring(game:HttpGet("]] .. meinGithubLink .. [["))()
+                            end
+                        ]])
+                    end)
+                end
+                
+                local teleportSuccess, teleportError = pcall(function()
+                    TeleportService:TeleportToPlaceInstance(PlaceId, server.id, LocalPlayer)
+                end)
+                
+                if teleportSuccess then
+                    task.wait(5) -- Wartet kurz auf den Wechsel
+                    return
+                end
+            end
+        end
+    end
+    
+    StartButton.Text = "Retry in 2s..."
+    task.wait(2)
+end
+
+-- TIMER-LOGIK
+local running = true
+local hopperThread = nil
+
+local function startTimer()
+    if hopperThread then task.cancel(hopperThread) end
+    
+    hopperThread = task.spawn(function()
+        -- Erster Countdown vor dem Hop
+        for i = 5, 1, -1 do
+            if not running then return end
+            StartButton.Text = "Hop in " .. i .. "s..."
+            task.wait(1)
+        end
+        
+        -- Hauptschleife für die Server-Suche, falls ein Hop fehlschlägt
+        while running do
+            serverHop()
+            task.wait(1)
+        end
+    end)
+end
+
+-- Klick stoppt oder startet den Hopper
+StartButton.MouseButton1Click:Connect(function()
+    running = not running
+    if running then
+        StartButton.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+        startTimer()
+    else
+        if hopperThread then 
+            task.cancel(hopperThread) 
+            hopperThread = nil
+        end
+        StartButton.Text = "Start"
+        StartButton.BackgroundColor3 = Color3.fromRGB(0, 180, 90)
+    end
+end)
+
+-- Sofort starten beim Laden
+startTimer()
