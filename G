@@ -1,0 +1,266 @@
+-- Verhindert Abstürze, falls das Spiel noch lädt
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- !!! WICHTIG: ERSETZE DIESEN LINK MIT DEINEM ECHTEN RAW-LINK !!!
+-- Der Link MUSS mit "https://raw.githubusercontent.com/..." anfangen!
+local meinGithubLink = "HIER_DEINEN_GITHUB_RAW_LINK_EINFÜGEN"
+
+-- Schwellenwerte für das Einkommen
+local THRESHOLDS = {
+    TEN_M = 10000000,
+    FIFTY_M = 50000000,
+    HUNDRED_M = 100000000
+}
+local currentThreshold = THRESHOLDS.TEN_M -- Standardwert beim Start
+
+-- UI Erstellen
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MinimalHopperGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local StartButton = Instance.new("TextButton")
+StartButton.Size = UDim2.new(0, 180, 0, 50)
+StartButton.Position = UDim2.new(0.5, -90, 0.5, -25)
+StartButton.Text = "Scanne..."
+StartButton.TextSize = 20
+StartButton.Font = Enum.Font.SourceSansBold
+StartButton.BackgroundColor3 = Color3.fromRGB(200, 0, 0) -- Rot für Autostart
+StartButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+StartButton.Active = true
+StartButton.Parent = ScreenGui
+
+local ButtonCorner = Instance.new("UICorner")
+ButtonCorner.CornerRadius = UDim.new(0, 8)
+ButtonCorner.Parent = StartButton
+
+-- Menü-Frame für die Einstellungen (wird unter dem Button platziert)
+local MenuFrame = Instance.new("Frame")
+MenuFrame.Size = UDim2.new(0, 180, 0, 120)
+MenuFrame.Position = UDim2.new(StartButton.Position.X.Scale, StartButton.Position.X.Offset, StartButton.Position.Y.Scale, StartButton.Position.Y.Offset + 55)
+MenuFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+MenuFrame.Visible = false
+MenuFrame.Parent = ScreenGui
+
+local MenuCorner = Instance.new("UICorner")
+MenuCorner.CornerRadius = UDim.new(0, 8)
+MenuCorner.Parent = MenuFrame
+
+-- Funktion, um Buttons im Menü zu erstellen
+local function createMenuButton(text, threshold, yOffset)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -10, 0, 30)
+    btn.Position = UDim2.new(0, 5, 0, yOffset)
+    btn.Text = text
+    btn.TextSize = 16
+    btn.Font = Enum.Font.SourceSansBold
+    btn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Parent = MenuFrame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 5)
+    btnCorner.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        currentThreshold = threshold
+        MenuFrame.Visible = false
+        warn("Schwellenwert geändert auf: " .. text)
+        StartButton.Text = "Scanne..."
+    end)
+end
+
+createMenuButton("10 Millionen", THRESHOLDS.TEN_M, 10)
+createMenuButton("50 Millionen", THRESHOLDS.FIFTY_M, 45)
+createMenuButton("100 Millionen", THRESHOLDS.HUNDRED_M, 80)
+
+-- DRAG-SYSTEM (Macht den Button und das Menü verschiebbar)
+local dragging, dragInput, dragStart, startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    StartButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    MenuFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y + 55)
+end
+
+StartButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = StartButton.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+StartButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+-- LOGIK ZUM UMWANDELN DER TEXT-WERTE IN ECHTE ZAHLEN
+local function parseIncome(text)
+    local cleanText = text:gsub("/s", ""):gsub("%$", ""):gsub("%s+", "")
+    
+    local multiplier = 1
+    if cleanText:lower():find("k") then
+        multiplier = 1000
+        cleanText = cleanText:lower():gsub("k", "")
+    elseif cleanText:lower():find("m") then
+        multiplier = 1000000
+        cleanText = cleanText:lower():gsub("m", "")
+    end
+    
+    local number = tonumber(cleanText)
+    if number then
+        return number * multiplier
+    end
+    return 0
+end
+
+-- SERVER-SUCHE
+local function serverHop()
+    local PlaceId = game.PlaceId
+    local JobId = game.JobId
+    local url = string.format("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Asc&limit=100", tostring(PlaceId))
+    
+    StartButton.Text = "Suche Server..."
+    
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(url))
+    end)
+    
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing and server.maxPlayers and server.playing < (server.maxPlayers - 2) and server.id ~= JobId then
+                StartButton.Text = "Teleportiere..."
+                
+                -- Sicherer Queue on Teleport ohne direkten Absturz bei falschem Link
+                local qot = queue_on_teleport or (syn and syn.queue_on_teleport)
+                if qot and meinGithubLink ~= "HIER_DEINEN_GITHUB_RAW_LINK_EINFÜGEN" then
+                    pcall(function()
+                        qot([[
+                            repeat task.wait() until game:IsLoaded()
+                            task.wait(2)
+                            if game:GetService("Players").LocalPlayer then
+                                local s, code = pcall(function() return game:HttpGet("]] .. meinGithubLink .. [[") end)
+                                if s and code then
+                                    local func, err = loadstring(code)
+                                    if func then func() else warn("Fehler im geladenen Script:", err) end
+                                else
+                                    warn("Konnte Github-Link beim Teleport nicht abrufen!")
+                                end
+                            end
+                        ]])
+                    end)
+                end
+                
+                local teleportSuccess, teleportError = pcall(function()
+                    TeleportService:TeleportToPlaceInstance(PlaceId, server.id, LocalPlayer)
+                end)
+                
+                if teleportSuccess then
+                    task.wait(5)
+                    return
+                end
+            end
+        end
+    end
+    
+    StartButton.Text = "Retry in 2s..."
+    task.wait(2)
+end
+
+-- HAUPTLOGIK-SCHLEIFE
+local running = true
+local hopperThread = nil
+
+local function scanAndHopLogic()
+    if hopperThread then task.cancel(hopperThread) end
+    
+    hopperThread = task.spawn(function()
+        while running do
+            -- 1. Scan die Map nach dem höchsten Einkommen
+            local highestIncome = 0
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if obj:IsA("TextLabel") and (obj.Text:find("%$") or obj.Text:find("/s")) then
+                    local income = parseIncome(obj.Text)
+                    if income > highestIncome then
+                        highestIncome = income
+                    end
+                end
+            end
+            
+            -- 2. Überprüfe den gefundenen Wert gegen das eingestellte Ziel
+            if highestIncome >= currentThreshold then
+                -- Ziel erreicht! Stoppe den Hopper und bleibe hier
+                StartButton.Text = "Einkommen OK!"
+                StartButton.BackgroundColor3 = Color3.fromRGB(0, 180, 90) -- Grün
+                if MenuFrame.Visible then StartButton.Text = "Menü offen..." end
+            else
+                -- Zu wenig Einkommen! Starte den 5-Sekunden-Countdown vor dem Teleport
+                StartButton.BackgroundColor3 = Color3.fromRGB(200, 0, 0) -- Rot
+                
+                for i = 5, 1, -1 do
+                    if not running then return end
+                    if not MenuFrame.Visible then
+                        StartButton.Text = "Hop in " .. i .. "s..."
+                    end
+                    task.wait(1)
+                    
+                    -- Sicherheits-Recheck während des Countdowns
+                    if i == 1 then
+                        local recheckIncome = 0
+                        for _, obj in ipairs(workspace:GetDescendants()) do
+                            if obj:IsA("TextLabel") and (obj.Text:find("%$") or obj.Text:find("/s")) then
+                                local inc = parseIncome(obj.Text)
+                                if inc > recheckIncome then recheckIncome = inc end
+                            end
+                        end
+                        if recheckIncome >= currentThreshold then
+                            break
+                        end
+                    end
+                end
+                
+                -- Wenn immer noch zu niedrig, Server wechseln
+                if running then
+                    serverHop()
+                end
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+-- Klick öffnet das Menü
+StartButton.MouseButton1Click:Connect(function()
+    MenuFrame.Visible = not MenuFrame.Visible
+    if MenuFrame.Visible then
+        StartButton.Text = "Menü offen..."
+    else
+        StartButton.Text = "Scanne..."
+    end
+end)
+
+-- Sofort starten beim Laden
+scanAndHopLogic()
