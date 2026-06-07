@@ -46,7 +46,7 @@ loadSettings()
 
 -- UI Erstellen
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SinglePetHopperGui_v8"
+ScreenGui.Name = "SinglePetHopperGui_v9"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -129,44 +129,45 @@ UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then update(input) end
 end)
 
--- FILTER FÜR TEXT ZU ZAHLEN
+-- DER ULTIMATIVE ZAHLEN-INTERPRETER (Erkennt 20M, 20.5M, 20B etc. absolut fehlerfrei)
 local function parseIncome(text)
-    local cleanText = text:lower()
-    local hasM = cleanText:find("m")
-    local hasK = cleanText:find("k")
+    -- Bereinige den Text von störenden Zeichen, lasse aber Buchstaben für Multiplikatoren und Punkte da
+    local cleanText = text:lower():gsub("%s+", ""):gsub("%$", ""):gsub("/s", ""):gsub(",", ".")
     
-    cleanText = cleanText:gsub(",", ".")
-    cleanText = cleanText:gsub("[^%d%.]", "")
+    -- Extrahiere nur die Zahl am Anfang (unterstützt jetzt auch Kommata/Punkte sauber)
+    local numberPart = cleanText:match("^([%d%.]+)")
+    if not numberPart then return 0 end
     
-    local number = tonumber(cleanText)
+    local number = tonumber(numberPart)
     if not number then return 0 end
     
-    if hasM then
+    -- Multiplikatoren extrem strikt prüfen
+    if cleanText:find("m") then
         return number * 1000000
-    elseif hasK then
+    elseif cleanText:find("k") then
         return number * 1000
+    elseif cleanText:find("b") then -- Falls mal Milliarden-Pets kommen
+        return number * 1000000000
     end
     
     return number
 end
 
--- ENDLOS-SERVER-HOPPER (Schleife bricht erst bei Erfolg ab)
+-- ENDLOS-SERVER-HOPPER (Sucht volle, aktive Lobbys und wiederholt bei Fehlern)
 local function serverHop()
     local PlaceId = game.PlaceId
     local JobId = game.JobId
     local url = string.format("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Desc&limit=100", tostring(PlaceId))
     
-    -- Teleport-Fehler abfangen, um unendlich weiterzusuchen
     TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
         if player == LocalPlayer then
-            warn("[Hopper] Teleport fehlgeschlagen: " .. tostring(errorMessage) .. " - Versuche es direkt erneut!")
+            warn("[Hopper] Teleport fehlgeschlagen! Versuche es direkt noch mal...")
         end
     end)
     
-    -- ENDLOS-SCHLEIFE FÜR DEN REHOP
     while true do
         StartButton.Text = "Suche Server..."
-        StartButton.BackgroundColor3 = Color3.fromRGB(200, 100, 0) -- Orange für "Hopping"
+        StartButton.BackgroundColor3 = Color3.fromRGB(200, 100, 0) -- Orange
         
         local success, result = pcall(function()
             return HttpService:JSONDecode(game:HttpGet(url))
@@ -176,7 +177,7 @@ local function serverHop()
             local guteServer = {}
             for _, server in ipairs(result.data) do
                 if server.playing and server.maxPlayers and server.id ~= JobId then
-                    -- Nur Server, die mindestens halb voll sind
+                    -- Nur Lobbys, die voll/aktiv sind (Keine leeren Bot-Lobbys)
                     local mindestSpieler = math.floor(server.maxPlayers / 2)
                     if server.playing >= mindestSpieler and server.playing < (server.maxPlayers - 1) then
                         table.insert(guteServer, server)
@@ -184,18 +185,14 @@ local function serverHop()
                 end
             end
             
-            -- Versuch 1: Voller Server
             if #guteServer > 0 then
                 local targetServer = guteServer[math.random(1, #guteServer)]
                 StartButton.Text = "Hop in volle Lobby..."
-                
-                local teleportSuccess = pcall(function()
+                pcall(function()
                     TeleportService:TeleportToPlaceInstance(PlaceId, targetServer.id, LocalPlayer)
                 end)
-                
-                task.wait(4) -- Warten ob der Teleport klappt, wenn nicht läuft die Schleife weiter
+                task.wait(4)
             else
-                -- Versuch 2 (Fallback): Irgendein normaler Server, Hauptsache nicht leer
                 StartButton.Text = "Hop-Fallback..."
                 for _, server in ipairs(result.data) do
                     if server.playing and server.maxPlayers and server.playing > 3 and server.id ~= JobId then
@@ -208,9 +205,7 @@ local function serverHop()
                 end
             end
         end
-        
-        StartButton.Text = "Fehler! Retry..."
-        task.wait(1.5) -- Kurze Pause vor dem nächsten Versuch, um Roblox nicht zu crashen
+        task.wait(1.5)
     end
 end
 
@@ -227,24 +222,25 @@ local function scanAndHopLogic()
             local foundTargetPet = false
             local highestPetFound = 0
             
+            -- Wir scannen jetzt JEDES TextLabel in der 3D-Welt
             for _, v in ipairs(workspace:GetDescendants()) do
                 if v:IsA("TextLabel") and v:IsDescendantOf(workspace) then
-                    local parentName = v.Parent.Name:lower()
-                    local grandParentName = v.Parent.Parent and v.Parent.Parent.Name:lower() or ""
                     
-                    if v.Parent:IsA("BillboardGui") and (parentName:find("pet") or parentName:find("display") or grandParentName:find("stand") or grandParentName:find("pet") or v.Text:find("/s")) then
+                    -- Sicherheits-Check: Ignoriere deinen eigenen Namen oder deine ID im Text komplett
+                    if not v.Text:find(LocalPlayer.Name) and not v.Text:find("197566") then
                         
-                        if not v.Text:find(LocalPlayer.Name) and not v.Text:find("197566") then
-                            local petIncome = parseIncome(v.Text)
+                        -- Wandle den Text in eine echte, pure Zahl um
+                        local petIncome = parseIncome(v.Text)
+                        
+                        -- Ignoriere absurde Shop-Dummys (über 1 Milliarde)
+                        if petIncome > 0 and petIncome < 1000000000 then
+                            if petIncome > highestPetFound then
+                                highestPetFound = petIncome
+                            end
                             
-                            if petIncome > 0 and petIncome < 1000000000 then
-                                if petIncome > highestPetFound then
-                                    highestPetFound = petIncome
-                                end
-                                
-                                if petIncome >= currentThreshold then
-                                    foundTargetPet = true
-                                end
+                            -- Wenn das gefundene Pet größer oder exakt gleich deinem Ziel ist (z.B. 20M >= 10M)
+                            if petIncome >= currentThreshold then
+                                foundTargetPet = true
                             end
                         end
                     end
@@ -252,7 +248,7 @@ local function scanAndHopLogic()
             end
             
             if tick() - lastLogTime > 3 then
-                print(string.format("[Hopper] Höchstes Haustier am Stand: %s | Ziel: %s", tostring(highestPetFound), tostring(currentThreshold)))
+                print(string.format("[Hopper] Höchstes gefundenes Haustier: %s | Ziel: %s", tostring(highestPetFound), tostring(currentThreshold)))
                 lastLogTime = tick()
             end
             
@@ -278,8 +274,8 @@ local function scanAndHopLogic()
                 end
                 
                 if running then
-                    serverHop() -- Startet die unendliche Teleport-Schleife
-                    break -- Beendet die Scan-Schleife, da wir eh weg-teleportieren
+                    serverHop()
+                    break
                 end
             end
             task.wait(1)
